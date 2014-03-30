@@ -249,6 +249,39 @@ struct vm_dirty_param {
 	unsigned long dirty_background_bytes;
 };
 
+enum {
+	MEMCG_WB_PAGES_DIRTIED,
+	MEMCG_WB_SHARED_PAGES_DIRTIED,
+	MEMCG_WB_PAGES_WRITTEN,
+	MEMCG_WB_SELF_PAGES_BY_SELF_FG,
+	MEMCG_WB_FOREIGN_PAGES_BY_SELF_FG,
+	MEMCG_WB_SHARED_PAGES_BY_SELF_FG,
+	MEMCG_WB_SELF_PAGES_BY_FOREIGN_FG,
+	MEMCG_WB_SELF_PAGES_BY_BG,
+	MEMCG_WB_SELF_PAGES_BY_PERIODIC,
+	MEMCG_WB_NON_SHARED_PAGES_BY_SELF_BG,
+	MEMCG_WB_SHARED_PAGES_BY_SELF_BG,
+	MEMCG_WB_NON_SHARED_PAGES_BY_SELF_PERIODIC,
+	MEMCG_WB_SHARED_PAGES_BY_SELF_PERIODIC,
+	NR_MEM_CGROUP_WB_STATS,
+};
+
+static const char *mem_cgroup_wbstat_string[NR_MEM_CGROUP_WB_STATS] = {
+	"pages_dirtied",
+	"shared_pages_dirtied",
+	"pages_written",
+	"self_pages_by_self_fg",
+	"foreign_pages_by_self_fg",
+	"shared_pages_by_self_fg",
+	"self_pages_by_foreign_fg",
+	"self_pages_by_bg",
+	"self_pages_by_periodic",
+	"non_shared_pages_by_self_bg",
+	"shared_pages_by_self_bg",
+	"non_shared_pages_by_self_periodic",
+	"shared_pages_by_self_periodic",
+};
+
 /*
  * The memory controller data structure. The memory controller controls both
  * page cache and RSS per cgroup. We would eventually like to provide
@@ -292,6 +325,8 @@ struct mem_cgroup {
 
 	/* control memory cgroup dirty pages */
 	struct vm_dirty_param dirty_param;
+
+	atomic_long_t wbstats[NR_MEM_CGROUP_WB_STATS];
 
 	/* OOM-Killer disable */
 	int		oom_kill_disable;
@@ -1850,6 +1885,68 @@ void mem_cgroup_check_bg_dirty_thresh(void)
 	}
 }
 
+void mem_cgroup_inc_writeback_stat(struct writeback_control *wbc,
+				   struct inode *inode,
+				   unsigned long nr_pages)
+{
+	struct mem_cgroup *memcg;
+	struct mem_cgroup *i_memcg;
+	unsigned short i_id;
+	int i_stat;
+	int m_stat;
+
+	if (!nr_pages)
+		return;
+
+	i_stat = -1;
+	i_id = inode->i_mapping->i_memcg;
+
+	/*
+	 * In current->memcg, record number of private, shared, foreign inodes
+	 * written and the writing context (fg, bg, periodic) writeback.
+	 */
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(current);
+	if (!memcg) {
+		rcu_read_unlock();
+		return;
+	}
+
+	if (wbc->for_kupdate) { /* periodic writeback */
+		if (i_id == I_MEMCG_SHARED)
+			m_stat = MEMCG_WB_SHARED_PAGES_BY_SELF_PERIODIC;
+		else {
+			m_stat = MEMCG_WB_NON_SHARED_PAGES_BY_SELF_PERIODIC;
+			i_stat = MEMCG_WB_SELF_PAGES_BY_PERIODIC;
+		}
+	} else if (wbc->for_background) { /* background writeback */
+		if (i_id == I_MEMCG_SHARED)
+			m_stat = MEMCG_WB_SHARED_PAGES_BY_SELF_BG;
+		else {
+			m_stat = MEMCG_WB_NON_SHARED_PAGES_BY_SELF_BG;
+			i_stat = MEMCG_WB_SELF_PAGES_BY_BG;
+		}
+	} else { /* foreground writeback */
+		if (i_id == I_MEMCG_SHARED)
+			m_stat = MEMCG_WB_SHARED_PAGES_BY_SELF_FG;
+		else if (i_id == css_id(&memcg->css))
+			m_stat = MEMCG_WB_SELF_PAGES_BY_SELF_FG;
+		else {
+			m_stat = MEMCG_WB_FOREIGN_PAGES_BY_SELF_FG;
+			i_stat = MEMCG_WB_SELF_PAGES_BY_FOREIGN_FG;
+		}
+	}
+
+	atomic_long_add(nr_pages, &memcg->wbstats[m_stat]);
+	if (i_stat != -1) {
+		i_memcg = mem_cgroup_lookup(i_id);
+		if (i_memcg)
+			atomic_long_add(nr_pages, &i_memcg->wbstats[i_stat]);
+	}
+
+	rcu_read_unlock();
+}
+
 /*
  * Determine if the given memcg's dirty and dirty+writeback memory usage are
  * over the memcg's foreground dirty limit.
@@ -2868,7 +2965,16 @@ void mem_cgroup_update_page_stat(struct page *page,
 				 * mark the inode shared by multiple memcg.
 				 */
 				mapping->i_memcg = I_MEMCG_SHARED;
+
+			atomic_long_inc(&memcg->wbstats[MEMCG_WB_PAGES_DIRTIED]);
+			if (mapping && (mapping->i_memcg == I_MEMCG_SHARED))
+				atomic_long_inc(&memcg->wbstats[MEMCG_WB_SHARED_PAGES_DIRTIED]);
 		}
+		break;
+
+	case MEM_CGROUP_STAT_WRITEBACK:
+		if (val > 0)
+			atomic_long_inc(&memcg->wbstats[MEMCG_WB_PAGES_WRITTEN]);
 		break;
 
 	default:
@@ -6636,6 +6742,25 @@ mem_cgroup_dirty_write(struct cgroup *cgrp, struct cftype *cft, u64 val)
 	return 0;
 }
 
+static int mem_cgroup_writeback_stat_read(struct cgroup *cgrp,
+					  struct cftype *cft,
+					  struct cgroup_map_cb *cb)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_cont(cgrp);
+	struct dirty_info info;
+	int i;
+
+	for (i = 0; i < NR_MEM_CGROUP_WB_STATS; i++)
+		cb->fill(cb, mem_cgroup_wbstat_string[i],
+			 atomic_long_read(&memcg->wbstats[i]));
+
+	mem_cgroup_dirty_info(global_dirtyable_memory(), memcg, &info);
+	cb->fill(cb, "dirty_thresh", info.dirty_thresh);
+	cb->fill(cb, "dirty_background_thresh", info.background_thresh);
+
+	return 0;
+}
+
 static struct cftype mem_cgroup_files[] = {
 	{
 		.name = "usage_in_bytes",
@@ -6766,6 +6891,11 @@ static struct cftype mem_cgroup_files[] = {
 		.write_string = mem_cgroup_dirty_write_string,
 		.private = MEM_CGROUP_DIRTY_BACKGROUND_LIMIT_IN_BYTES,
 	},
+	{
+		.name = "writeback_stat",
+		.read_map = mem_cgroup_writeback_stat_read,
+	},
+
 	{ },	/* terminate */
 };
 
@@ -6838,6 +6968,7 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 {
 	struct mem_cgroup *memcg;
 	size_t size = memcg_size();
+	int i;
 
 	/* Can be very big if nr_node_ids is very big */
 	if (size < PAGE_SIZE)
@@ -6852,6 +6983,10 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 	if (!memcg->stat)
 		goto out_free;
 	spin_lock_init(&memcg->pcp_counter_lock);
+
+	for (i = 0; i < NR_MEM_CGROUP_WB_STATS; i++)
+		atomic_long_set(&memcg->wbstats[i], 0);
+
 	return memcg;
 
 out_free:

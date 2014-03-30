@@ -654,6 +654,43 @@ When use_hierarchy=0, each cgroup has independent dirty memory usage and limits.
 When use_hierarchy=1 the dirty limits of parent cgroups are also checked to
 ensure that no dirty limit is exceeded.
 
+5.8 memory.writeback_stat
+
+The memory.writeback_stat file contains the following per cgroup writeback
+related statistics:
+
+pages_dirtied                     - # of pages entered dirty state
+shared_pages_dirtied              - # of pages associated with shared inode
+                                    entered dirty state (this is a subset of
+                                    pages_dirtied)
+pages_written                     - # of pages entered writeback state
+self_pages_by_self_fg             - # of this cgroup's pages written by this
+                                    cgroup in foreground writeback
+foreign_pages_by_self_fg          - # other cgroup pages written by this
+                                    cgroup in foreground writeback
+shared_pages_by_self_fg           - # of shared pages written by this cgroup
+                                    in foreground writeback
+self_pages_by_foreign_fg          - # of this cgroup's private pages written by
+                                    foreign cgroup foreground writeback
+self_pages_by_bg                  - # of this cgroup's private pages written by
+                                    cgroup background writeback regardless of
+                                    writer's cgroup
+self_pages_by_periodic            - # of this cgroup's private pages written by
+                                    periodic writeback regardless of writer's
+                                    cgroup
+non_shared_pages_by_self_bg       - # of non shared (private or foreign) pages
+                                    this cgroup wrote using background
+                                    writeback
+shared_pages_by_self_bg           - # of shared pages this cgroup wrote using
+                                    cgroup background writeback
+non_shared_pages_by_self_periodic - # of non shared (private or foreign) pages
+                                    this cgroup wrote using periodic writeback
+shared_pages_by_self_periodic     - # of shared pages this cgroup wrote using
+                                    periodic writeback
+dirty_thresh                      - # of pages before throttling writer
+dirty_background_thresh           - # of pages before triggering background
+                                    writeback
+
 6. Hierarchy support
 
 The memory controller supports a deep hierarchy and hierarchical accounting.

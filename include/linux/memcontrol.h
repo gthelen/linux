@@ -29,6 +29,7 @@ struct page_cgroup;
 struct page;
 struct mm_struct;
 struct kmem_cache;
+struct writeback_control;
 
 /*
  * The corresponding mem_cgroup_stat_names is defined in mm/memcontrol.c,
@@ -207,6 +208,9 @@ bool should_writeback_mem_cgroup_inode(struct inode *inode,
 				       bool shared_inodes);
 bool mem_cgroups_over_bg_dirty_thresh(void);
 void mem_cgroup_check_bg_dirty_thresh(void);
+void mem_cgroup_inc_writeback_stat(struct writeback_control *wbc,
+				   struct inode *inode,
+				   unsigned long nr_pages);
 bool mem_cgroup_hierarchical_dirty_info(unsigned long sys_available_mem,
 					struct mem_cgroup *memcg,
 					struct dirty_info *info);
@@ -409,6 +413,12 @@ static inline bool mem_cgroups_over_bg_dirty_thresh(void)
 }
 
 static inline void mem_cgroup_check_bg_dirty_thresh(void)
+{
+}
+
+static inline void mem_cgroup_inc_writeback_stat(struct writeback_control *wbc,
+						 struct inode *inode,
+						 unsigned long nr_pages)
 {
 }
 

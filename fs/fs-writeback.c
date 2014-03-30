@@ -722,6 +722,8 @@ static long writeback_sb_inodes(struct super_block *sb,
 		 */
 		__writeback_single_inode(inode, &wbc);
 
+		mem_cgroup_inc_writeback_stat(&wbc, inode,
+					      write_chunk - wbc.nr_to_write);
 		work->nr_pages -= write_chunk - wbc.nr_to_write;
 		wrote += write_chunk - wbc.nr_to_write;
 		spin_lock(&wb->list_lock);
