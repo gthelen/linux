@@ -141,7 +141,8 @@ DECLARE_EVENT_CLASS(mem_cgroup_consider_writeback,
 
 	TP_fast_assign(
 		__entry->css_id = css_id;
-		strncpy(__entry->bdi_name, dev_name(bdi->dev), 32);
+		strncpy(__entry->bdi_name, bdi ? dev_name(bdi->dev) : "<all>",
+			32);
 		__entry->nr_reclaimable = nr_reclaimable;
 		__entry->thresh = thresh;
 		__entry->over_limit = over_limit;
@@ -164,6 +165,7 @@ DEFINE_EVENT(mem_cgroup_consider_writeback, name, \
 
 DEFINE_MEM_CGROUP_CONSIDER_WRITEBACK_EVENT(mem_cgroup_consider_bg_writeback);
 DEFINE_MEM_CGROUP_CONSIDER_WRITEBACK_EVENT(mem_cgroup_consider_fg_writeback);
+DEFINE_MEM_CGROUP_CONSIDER_WRITEBACK_EVENT(mem_cgroup_consider_wakeup_flushers);
 
 TRACE_EVENT(mem_cgroup_fg_writeback,
 	TP_PROTO(unsigned long write_chunk,

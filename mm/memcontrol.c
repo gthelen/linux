@@ -2165,6 +2165,34 @@ bool mem_cgroup_hierarchical_dirty_info(unsigned long sys_available_mem,
 }
 
 /*
+ * Check if @memcg is over its background dirty limit.  If over then wakeup all
+ * bdi flushers to get under the limit.  This may end up writing child mem
+ * cgroup data.  This does not check parent mem cgroup, which should already be
+ * in compliance.  Call this routine after adjusting the allowable dirty limit.
+ * This routine does not need to be called as memory is dirtied.  The dirtying
+ * memory paths should all call mem_cgroup_balance_dirty_pages() to periodically
+ * check that dirty usage is below acceptable limits.
+ */
+static void mem_cgroup_consider_wakeup_dirty_flushers(struct mem_cgroup *memcg)
+{
+	struct dirty_info info;
+	unsigned long nr_reclaimable;
+	bool over;
+
+	mem_cgroup_dirty_info(global_dirtyable_memory(), memcg, &info);
+	nr_reclaimable = dirty_info_reclaimable(&info);
+	over = nr_reclaimable >= info.background_thresh;
+	trace_mem_cgroup_consider_wakeup_flushers(
+		css_id(&memcg->css), NULL, nr_reclaimable,
+		info.background_thresh, over);
+	if (over) {
+		mem_cgroup_mark_over_bg_thresh(memcg);
+		wakeup_flusher_threads(nr_reclaimable - info.background_thresh,
+				       WB_REASON_MEMCG_LIMIT_CHANGE, memcg);
+	}
+}
+
+/*
  * memcg->moving_account is used for checking possibility that some thread is
  * calling move_account(). When a thread on CPU-A starts moving pages under
  * a memcg, other threads should check memcg->moving_account under
@@ -5976,6 +6004,8 @@ static int mem_cgroup_write(struct cgroup *cont, struct cftype *cft,
 		ret = -EINVAL; /* should be BUG() ? */
 		break;
 	}
+	if (!ret && (type == _MEM))
+		mem_cgroup_consider_wakeup_dirty_flushers(memcg);
 	return ret;
 }
 
@@ -6702,12 +6732,14 @@ mem_cgroup_dirty_write_string(struct cgroup *cgrp, struct cftype *cft,
 	default:
 		BUG();
 	}
-	if (!ret)
+	if (!ret) {
 		/* background limit should be <= foreground limit */
 		memcg->dirty_param.dirty_background_bytes = min(
 			memcg->dirty_param.dirty_background_bytes,
 			memcg->dirty_param.dirty_bytes
 			);
+		mem_cgroup_consider_wakeup_dirty_flushers(memcg);
+	}
 	return ret;
 }
 
@@ -6739,6 +6771,7 @@ mem_cgroup_dirty_write(struct cgroup *cgrp, struct cftype *cft, u64 val)
 		memcg->dirty_param.dirty_background_ratio,
 		memcg->dirty_param.dirty_ratio
 		);
+	mem_cgroup_consider_wakeup_dirty_flushers(memcg);
 	return 0;
 }
 

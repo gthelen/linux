@@ -56,6 +56,7 @@ enum wb_reason {
 	 * so it has a mismatch name.
 	 */
 	WB_REASON_FORKER_THREAD,
+	WB_REASON_MEMCG_LIMIT_CHANGE,
 
 	WB_REASON_MAX,
 };
