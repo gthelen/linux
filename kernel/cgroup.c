@@ -126,7 +126,6 @@ struct cfent {
  * CSS ID -- ID per subsys's Cgroup Subsys State(CSS). used only when
  * cgroup_subsys->use_id != 0.
  */
-#define CSS_ID_MAX	(65535)
 struct css_id {
 	/*
 	 * The css to which this ID points. This pointer is set to valid value

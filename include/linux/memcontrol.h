@@ -202,6 +202,12 @@ static inline void mem_cgroup_dec_page_stat(struct page *page,
 	mem_cgroup_update_page_stat(page, idx, -1);
 }
 
+bool should_writeback_mem_cgroup_inode(struct inode *inode,
+				       unsigned short memcg_id,
+				       bool shared_inodes);
+bool mem_cgroups_over_bg_dirty_thresh(void);
+void mem_cgroup_check_bg_dirty_thresh(void);
+
 unsigned long mem_cgroup_soft_limit_reclaim(struct zone *zone, int order,
 						gfp_t gfp_mask,
 						unsigned long *total_scanned);
@@ -381,6 +387,23 @@ static inline void mem_cgroup_inc_page_stat(struct page *page,
 
 static inline void mem_cgroup_dec_page_stat(struct page *page,
 					    enum mem_cgroup_stat_index idx)
+{
+}
+
+static inline bool
+should_writeback_mem_cgroup_inode(struct inode *inode,
+				  unsigned short memcg_id,
+				  bool shared_inodes)
+{
+	return true;
+}
+
+static inline bool mem_cgroups_over_bg_dirty_thresh(void)
+{
+	return true;
+}
+
+static inline void mem_cgroup_check_bg_dirty_thresh(void)
 {
 }
 
