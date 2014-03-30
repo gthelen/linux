@@ -65,6 +65,11 @@
  *      ->swap_lock		(exclusive_swap_page, others)
  *        ->mapping->tree_lock
  *
+ *  ->memcg->move_lock	(mem_cgroup_begin_update_page_stat->
+ *						move_lock_mem_cgroup)
+ *    ->private_lock		(__set_page_dirty_buffers)
+ *        ->mapping->tree_lock
+ *
  *  ->i_mutex
  *    ->i_mmap_mutex		(truncate->unmap_mapping_range)
  *
@@ -110,7 +115,8 @@
 /*
  * Delete a page from the page cache and free it. Caller has to make
  * sure the page is locked and that nobody else uses it - or that usage
- * is safe.  The caller must hold the mapping's tree_lock.
+ * is safe.  The caller must hold the mapping's tree_lock and
+ * mem_cgroup_begin/end_update_page_stat() lock.
  */
 void __delete_from_page_cache(struct page *page)
 {
@@ -144,6 +150,7 @@ void __delete_from_page_cache(struct page *page)
 	 * having removed the page entirely.
 	 */
 	if (PageDirty(page) && mapping_cap_account_dirty(mapping)) {
+		mem_cgroup_dec_page_stat(page, MEM_CGROUP_STAT_FILE_DIRTY);
 		dec_zone_page_state(page, NR_FILE_DIRTY);
 		dec_bdi_stat(mapping->backing_dev_info, BDI_RECLAIMABLE);
 	}
@@ -161,13 +168,17 @@ void delete_from_page_cache(struct page *page)
 {
 	struct address_space *mapping = page->mapping;
 	void (*freepage)(struct page *);
+	bool locked;
+	unsigned long flags, flags2;
 
 	BUG_ON(!PageLocked(page));
 
 	freepage = mapping->a_ops->freepage;
-	spin_lock_irq(&mapping->tree_lock);
+	mem_cgroup_begin_update_page_stat(page, &locked, &flags);
+	spin_lock_irqsave(&mapping->tree_lock, flags2);
 	__delete_from_page_cache(page);
-	spin_unlock_irq(&mapping->tree_lock);
+	spin_unlock_irqrestore(&mapping->tree_lock, flags2);
+	mem_cgroup_end_update_page_stat(page, &locked, &flags);
 	mem_cgroup_uncharge_cache_page(page);
 
 	if (freepage)
@@ -417,6 +428,8 @@ int replace_page_cache_page(struct page *old, struct page *new, gfp_t gfp_mask)
 	if (!error) {
 		struct address_space *mapping = old->mapping;
 		void (*freepage)(struct page *);
+		bool locked;
+		unsigned long flags, flags2;
 
 		pgoff_t offset = old->index;
 		freepage = mapping->a_ops->freepage;
@@ -425,7 +438,8 @@ int replace_page_cache_page(struct page *old, struct page *new, gfp_t gfp_mask)
 		new->mapping = mapping;
 		new->index = offset;
 
-		spin_lock_irq(&mapping->tree_lock);
+		mem_cgroup_begin_update_page_stat(old, &locked, &flags);
+		spin_lock_irqsave(&mapping->tree_lock, flags2);
 		__delete_from_page_cache(old);
 		error = radix_tree_insert(&mapping->page_tree, offset, new);
 		BUG_ON(error);
@@ -433,7 +447,8 @@ int replace_page_cache_page(struct page *old, struct page *new, gfp_t gfp_mask)
 		__inc_zone_page_state(new, NR_FILE_PAGES);
 		if (PageSwapBacked(new))
 			__inc_zone_page_state(new, NR_SHMEM);
-		spin_unlock_irq(&mapping->tree_lock);
+		spin_unlock_irqrestore(&mapping->tree_lock, flags2);
+		mem_cgroup_end_update_page_stat(old, &locked, &flags);
 		/* mem_cgroup codes must not be called under tree_lock */
 		mem_cgroup_replace_page_cache(old, new);
 		radix_tree_preload_end();

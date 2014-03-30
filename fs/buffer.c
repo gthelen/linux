@@ -650,19 +650,22 @@ EXPORT_SYMBOL(mark_buffer_dirty_inode);
  *
  * If warn is true, then emit a warning if the page is not uptodate and has
  * not been truncated.
+ *
+ * The caller must hold mem_cgroup_begin_update_page_stat() lock.
  */
 static void __set_page_dirty(struct page *page,
 		struct address_space *mapping, int warn)
 {
-	spin_lock_irq(&mapping->tree_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&mapping->tree_lock, flags);
 	if (page->mapping) {	/* Race with truncate? */
 		WARN_ON_ONCE(warn && !PageUptodate(page));
 		account_page_dirtied(page, mapping);
 		radix_tree_tag_set(&mapping->page_tree,
 				page_index(page), PAGECACHE_TAG_DIRTY);
 	}
-	spin_unlock_irq(&mapping->tree_lock);
-	__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
+	spin_unlock_irqrestore(&mapping->tree_lock, flags);
 }
 
 /*
@@ -694,6 +697,8 @@ int __set_page_dirty_buffers(struct page *page)
 {
 	int newly_dirty;
 	struct address_space *mapping = page_mapping(page);
+	bool locked;
+	unsigned long flags;
 
 	if (unlikely(!mapping))
 		return !TestSetPageDirty(page);
@@ -708,11 +713,22 @@ int __set_page_dirty_buffers(struct page *page)
 			bh = bh->b_this_page;
 		} while (bh != head);
 	}
+	/*
+	 * Use mem_group_{begin,end}_update_page_stat() to keep PageDirty
+	 * synchronized with per-memcg dirty page counters.
+	 */
+	mem_cgroup_begin_update_page_stat(page, &locked, &flags);
 	newly_dirty = !TestSetPageDirty(page);
 	spin_unlock(&mapping->private_lock);
 
 	if (newly_dirty)
 		__set_page_dirty(page, mapping, 1);
+
+	mem_cgroup_end_update_page_stat(page, &locked, &flags);
+
+	if (newly_dirty)
+		__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
+
 	return newly_dirty;
 }
 EXPORT_SYMBOL(__set_page_dirty_buffers);
@@ -1169,11 +1185,19 @@ void mark_buffer_dirty(struct buffer_head *bh)
 
 	if (!test_set_buffer_dirty(bh)) {
 		struct page *page = bh->b_page;
+		bool locked;
+		unsigned long flags;
+		struct address_space *mapping = NULL;
+
+		mem_cgroup_begin_update_page_stat(page, &locked, &flags);
 		if (!TestSetPageDirty(page)) {
-			struct address_space *mapping = page_mapping(page);
+			mapping = page_mapping(page);
 			if (mapping)
 				__set_page_dirty(page, mapping, 0);
 		}
+		mem_cgroup_end_update_page_stat(page, &locked, &flags);
+		if (mapping)
+			__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
 	}
 }
 EXPORT_SYMBOL(mark_buffer_dirty);

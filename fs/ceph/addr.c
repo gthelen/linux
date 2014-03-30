@@ -76,6 +76,17 @@ static int ceph_set_page_dirty(struct page *page)
 	if (unlikely(!mapping))
 		return !TestSetPageDirty(page);
 
+#ifdef CONFIG_MEMCG
+	/*
+	 * This code has not yet been updated to work with per-memcg dirty page
+	 * accounting.  The missing piece is to add calls to
+	 * mem_cgroup_{begin,end}_update_page_stat() to synchronize updates to
+	 * page->memcg->nr_dirty the moving of per-page accounting between
+	 * memcg.
+	 */
+	BUILD_BUG();
+#endif
+
 	if (TestSetPageDirty(page)) {
 		dout("%p set_page_dirty %p idx %lu -- already dirty\n",
 		     mapping->host, page, page->index);

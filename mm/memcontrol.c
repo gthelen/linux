@@ -90,6 +90,7 @@ static const char * const mem_cgroup_stat_names[] = {
 	"rss",
 	"rss_huge",
 	"mapped_file",
+	"dirty",
 	"writeback",
 	"swap",
 };
@@ -3807,6 +3808,18 @@ static int mem_cgroup_move_account(struct page *page,
 		mem_cgroup_move_account_page_stat(from, to, nr_pages,
 			MEM_CGROUP_STAT_FILE_MAPPED);
 
+	/*
+	 * lruvec lock grabbed above serializes with cancel_dirty_page()
+	 * clearing of PageDirty.  So mapping should be stable.
+	 */
+	if (!anon && PageDirty(page)) {
+		struct address_space *mapping = page_mapping(page);
+
+		if (mapping && mapping_cap_account_dirty(mapping))
+			mem_cgroup_move_account_page_stat(from, to, nr_pages,
+						MEM_CGROUP_STAT_FILE_DIRTY);
+	}
+
 	if (PageWriteback(page))
 		mem_cgroup_move_account_page_stat(from, to, nr_pages,
 			MEM_CGROUP_STAT_WRITEBACK);
@@ -4189,6 +4202,13 @@ __mem_cgroup_uncharge_common(struct page *page, enum charge_type ctype,
 	}
 
 	mem_cgroup_charge_statistics(memcg, page, anon, -nr_pages);
+
+	/*
+	 * Per-page stats should have be cleared.  The page should not have any
+	 * outstanding counts charged to the memcg.
+	 */
+	WARN_ON_ONCE(!anon && page_mapped(page));
+	WARN_ON_ONCE(!anon && PageDirty(page));
 
 	ClearPageCgroupUsed(pc);
 	/*
