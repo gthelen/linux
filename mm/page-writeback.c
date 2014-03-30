@@ -1205,8 +1205,8 @@ static long bdi_min_pause(struct backing_dev_info *bdi,
  * If we're over `background_thresh' then the writeback threads are woken to
  * perform some writeout.
  */
-static void balance_dirty_pages(struct address_space *mapping,
-				unsigned long pages_dirtied)
+static noinline_for_stack void
+balance_dirty_pages(struct address_space *mapping, unsigned long pages_dirtied)
 {
 	unsigned long nr_reclaimable;	/* = file_dirty + unstable_nfs */
 	unsigned long bdi_reclaimable;
