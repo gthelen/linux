@@ -1776,6 +1776,27 @@ bool should_writeback_mem_cgroup_inode(struct inode *inode,
 }
 
 /*
+ * Mark all child cgroup as eligible for writeback because @memcg is over its bg
+ * threshold.
+ */
+static void mem_cgroup_mark_over_bg_thresh(struct mem_cgroup *memcg)
+{
+	struct mem_cgroup *iter;
+
+	/* mark this and all child cgroup as candidates for writeback */
+	for_each_mem_cgroup_tree(iter, memcg)
+		set_bit(css_id(&iter->css), over_bg_dirty_bitmap);
+}
+
+static void mem_cgroup_queue_bg_writeback(struct mem_cgroup *memcg,
+					  struct backing_dev_info *bdi)
+{
+	mem_cgroup_mark_over_bg_thresh(memcg);
+	if (unlikely(!writeback_in_progress(bdi)))
+		bdi_start_background_writeback(bdi);
+}
+
+/*
  * This routine is called as writeback writes inode pages.  The routine clears
  * any over-background-limit bits for memcg that are no longer over their
  * background dirty limit.
@@ -1827,6 +1848,223 @@ void mem_cgroup_check_bg_dirty_thresh(void)
 
 		css_put(&ref_memcg->css);
 	}
+}
+
+/*
+ * Determine if the given memcg's dirty and dirty+writeback memory usage are
+ * over the memcg's foreground dirty limit.
+ */
+static void mem_cgroup_over_fg_dirty_limit(unsigned long sys_available_mem,
+					   struct mem_cgroup *memcg,
+					   unsigned short id,
+					   struct backing_dev_info *bdi,
+					   bool *dirty_over_fg,
+					   bool *dirty_and_writeback_under_fg)
+{
+	struct dirty_info info;
+	unsigned long nr_reclaimable;
+
+	mem_cgroup_dirty_info(sys_available_mem, memcg, &info);
+	nr_reclaimable = dirty_info_reclaimable(&info);
+
+	*dirty_over_fg = nr_reclaimable > info.dirty_thresh;
+	*dirty_and_writeback_under_fg = nr_reclaimable + info.nr_writeback <=
+		info.dirty_thresh;
+
+	trace_mem_cgroup_consider_fg_writeback(id, bdi, nr_reclaimable,
+				info.dirty_thresh, *dirty_over_fg);
+}
+
+/*
+ * Return true if the given memcg's dirty memory usage is over its background
+ * dirty limit.
+ */
+static bool mem_cgroup_over_bg_dirty_limit(unsigned long sys_available_mem,
+					   struct mem_cgroup *memcg,
+					   unsigned short id,
+					   struct backing_dev_info *bdi)
+{
+	struct dirty_info info;
+	unsigned long nr_reclaimable;
+	bool over;
+
+	mem_cgroup_dirty_info(sys_available_mem, memcg, &info);
+	nr_reclaimable = dirty_info_reclaimable(&info);
+	over = nr_reclaimable >= info.background_thresh;
+
+	trace_mem_cgroup_consider_bg_writeback(id, bdi, nr_reclaimable,
+					       info.background_thresh, over);
+	return over;
+}
+
+/*
+ * This routine must be called periodically by processes which generate dirty
+ * pages.  It considers the dirty pages usage and thresholds of the current
+ * cgroup and (depending if hierarchical accounting is enabled) ancestral memcg.
+ * If any of the considered memcg are over their background dirty limit, then
+ * background writeback is queued.  If any are over the foreground dirty limit
+ * then the dirtying task is throttled while writing dirty data.  The per-memcg
+ * dirty limits checked by this routine are distinct from either the per-system,
+ * per-bdi, or per-task limits considered by balance_dirty_pages().
+ *
+ *   Example hierarchy:
+ *                 root
+ *            A            B
+ *        A1      A2         B1
+ *     A11 A12  A21 A22
+ *
+ * Assume that mem_cgroup_balance_dirty_pages() is called on A11.  This routine
+ * starts at A11 walking upwards towards the root.  If A11 is over dirty limit,
+ * then writeback A11 inodes until under limit.  Next check A1, if over limit
+ * then write A1,A11,A12.  Then check A.  If A is over A limit, then invoke
+ * writeback on A* until A is under A limit.
+ */
+void mem_cgroup_balance_dirty_pages(struct address_space *mapping,
+				    unsigned long write_chunk)
+{
+	struct backing_dev_info *bdi = mapping->backing_dev_info;
+	struct mem_cgroup *memcg;
+	struct mem_cgroup *ref_memcg;
+	unsigned long nr_written;
+	unsigned long sys_available_mem;
+	unsigned long pause = 1;
+	unsigned short id;
+	bool shared_inodes;
+	bool dirty_over_fg;
+	bool dirty_and_writeback_under_fg;
+
+	if (mem_cgroup_disabled())
+		return;
+
+	sys_available_mem = global_dirtyable_memory();
+
+	/* reference the memcg so it is not deleted during this routine */
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(current);
+	if (memcg && mem_cgroup_is_root(memcg))
+		memcg = NULL;
+	if (memcg)
+		css_get(&memcg->css);
+	rcu_read_unlock();
+	ref_memcg = memcg;
+
+	/* balance entire ancestry of current's memcg. */
+	for (; !fatal_signal_pending(current) &&
+	       mem_cgroup_has_dirty_limit(memcg);
+	     memcg = parent_mem_cgroup(memcg)) {
+		id = css_id(&memcg->css);
+
+		/*
+		 * Keep throttling and writing inode data so long as memcg is
+		 * over its dirty limit.  Inode being written by multiple memcg
+		 * (aka shared_inodes) cannot easily be attributed a particular
+		 * memcg.  Shared inodes are thought to be much rarer than
+		 * non-shared inodes.  First try to satisfy this memcg's dirty
+		 * limits using non-shared inodes.
+		 */
+		for (shared_inodes = false; !fatal_signal_pending(current); ) {
+			/*
+			 * if memcg is under dirty limit, then break from
+			 * throttling loop.
+			 */
+			mem_cgroup_over_fg_dirty_limit(sys_available_mem, memcg,
+				id, bdi, &dirty_over_fg,
+				&dirty_and_writeback_under_fg);
+
+			if (dirty_and_writeback_under_fg)
+				break;
+
+			if (dirty_over_fg) {
+				nr_written = writeback_inodes_wb(&bdi->wb,
+					write_chunk, WB_REASON_BALANCE_DIRTY,
+					memcg, shared_inodes);
+				trace_mem_cgroup_fg_writeback(write_chunk,
+					nr_written, id, bdi, shared_inodes);
+				/* recheck dirty usage before pausing */
+				mem_cgroup_over_fg_dirty_limit(
+					sys_available_mem, memcg,
+					id, bdi, &dirty_over_fg,
+					&dirty_and_writeback_under_fg);
+				if (dirty_and_writeback_under_fg)
+					break;	/* We've done our duty */
+				/* if no progress, then consider shared inodes */
+				if ((nr_written == 0) && !shared_inodes) {
+					trace_mem_cgroup_enable_shared_writeback(id);
+					shared_inodes = true;
+				}
+			}
+
+			__set_current_state(TASK_KILLABLE);
+			io_schedule_timeout(pause);
+
+			/*
+			 * Increase the delay for each loop, up to our previous
+			 * default of taking a 100ms nap.
+			 */
+			pause <<= 1;
+			if (pause > HZ / 10)
+				pause = HZ / 10;
+		}
+
+		/* if memcg is over background limit, then queue bg writeback */
+		if (mem_cgroup_over_bg_dirty_limit(sys_available_mem, memcg, id,
+						   bdi))
+			mem_cgroup_queue_bg_writeback(memcg, bdi);
+	}
+
+	if (ref_memcg)
+		css_put(&ref_memcg->css);
+}
+
+/*
+ * Set @info to the dirty thresholds and usage of the memcg (within the
+ * ancestral chain of @memcg) closest to its dirty limit or the first memcg over
+ * its limit.
+ *
+ * The check is not stable because the usage and limits can change asynchronous
+ * to this routine.
+ *
+ * If @memcg has no per-cgroup dirty limits, then returns false.
+ * Otherwise @info is set and returns true.
+ */
+bool mem_cgroup_hierarchical_dirty_info(unsigned long sys_available_mem,
+					struct mem_cgroup *memcg,
+					struct dirty_info *info)
+{
+	unsigned long usage;
+	struct dirty_info uninitialized_var(cur_info);
+
+	if (mem_cgroup_disabled())
+		return false;
+
+	info->nr_writeback = ULONG_MAX;  /* invalid initial value */
+
+	/* walk up hierarchy enabled parents */
+	for (; mem_cgroup_has_dirty_limit(memcg);
+	     memcg = parent_mem_cgroup(memcg)) {
+		mem_cgroup_dirty_info(sys_available_mem, memcg, &cur_info);
+		usage = dirty_info_reclaimable(&cur_info) +
+			cur_info.nr_writeback;
+
+		/* if over limit, stop searching */
+		if (usage >= cur_info.dirty_thresh) {
+			*info = cur_info;
+			break;
+		}
+
+		/*
+		 * Save dirty usage of memcg closest to its limit if either:
+		 *     - memcg is the first memcg considered
+		 *     - memcg dirty margin is smaller than last recorded one
+		 */
+		if ((info->nr_writeback == ULONG_MAX) ||
+		    (cur_info.dirty_thresh - usage) <
+		    (info->dirty_thresh -
+		     (dirty_info_reclaimable(info) + info->nr_writeback)))
+			*info = cur_info;
+	}
+
+	return info->nr_writeback != ULONG_MAX;
 }
 
 /*

@@ -27,6 +27,7 @@ DECLARE_PER_CPU(int, dirty_throttle_leaks);
 #define DIRTY_FULL_SCOPE	(DIRTY_SCOPE / 2)
 
 struct backing_dev_info;
+struct mem_cgroup;
 
 /*
  * fs/fs-writeback.c
@@ -40,6 +41,7 @@ enum writeback_sync_modes {
  * why some writeback work was initiated
  */
 enum wb_reason {
+	WB_REASON_BALANCE_DIRTY,
 	WB_REASON_BACKGROUND,
 	WB_REASON_TRY_TO_FREE_PAGES,
 	WB_REASON_SYNC,
@@ -99,7 +101,8 @@ int try_to_writeback_inodes_sb_nr(struct super_block *, unsigned long nr,
 				  enum wb_reason reason);
 void sync_inodes_sb(struct super_block *);
 long writeback_inodes_wb(struct bdi_writeback *wb, long nr_pages,
-				enum wb_reason reason);
+			 enum wb_reason reason, struct mem_cgroup *memcg,
+			 bool shared_inodes);
 void wakeup_flusher_threads(long nr_pages, enum wb_reason reason,
 			    struct mem_cgroup *memcg);
 void inode_wait_for_writeback(struct inode *inode);

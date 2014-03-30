@@ -5,6 +5,7 @@
 #define _TRACE_MEMCONTROL_H
 
 #include <linux/types.h>
+#include <linux/device.h>
 #include <linux/tracepoint.h>
 
 TRACE_EVENT(mem_cgroup_mark_inode_dirty,
@@ -119,6 +120,98 @@ TRACE_EVENT(mem_cgroups_over_bg_dirty_thresh,
 
 	TP_printk("over_limit=%d first_css_id=%d", __entry->over_limit,
 		  __entry->first_id)
+)
+
+DECLARE_EVENT_CLASS(mem_cgroup_consider_writeback,
+	TP_PROTO(unsigned short css_id,
+		 struct backing_dev_info *bdi,
+		 unsigned long nr_reclaimable,
+		 unsigned long thresh,
+		 bool over_limit),
+
+	TP_ARGS(css_id, bdi, nr_reclaimable, thresh, over_limit),
+
+	TP_STRUCT__entry(
+		__field(unsigned short, css_id)
+		__array(char, bdi_name, 32)
+		__field(unsigned long, nr_reclaimable)
+		__field(unsigned long, thresh)
+		__field(bool, over_limit)
+	),
+
+	TP_fast_assign(
+		__entry->css_id = css_id;
+		strncpy(__entry->bdi_name, dev_name(bdi->dev), 32);
+		__entry->nr_reclaimable = nr_reclaimable;
+		__entry->thresh = thresh;
+		__entry->over_limit = over_limit;
+	),
+
+	TP_printk("css_id=%d bdi=%s nr_reclaimable=%ld thresh=%ld over_limit=%d",
+		  __entry->css_id, __entry->bdi_name, __entry->nr_reclaimable,
+		  __entry->thresh, __entry->over_limit)
+)
+
+#define DEFINE_MEM_CGROUP_CONSIDER_WRITEBACK_EVENT(name) \
+DEFINE_EVENT(mem_cgroup_consider_writeback, name, \
+	TP_PROTO(unsigned short id, \
+		 struct backing_dev_info *bdi, \
+		 unsigned long nr_reclaimable, \
+		 unsigned long thresh, \
+		 bool over_limit), \
+	TP_ARGS(id, bdi, nr_reclaimable, thresh, over_limit) \
+)
+
+DEFINE_MEM_CGROUP_CONSIDER_WRITEBACK_EVENT(mem_cgroup_consider_bg_writeback);
+DEFINE_MEM_CGROUP_CONSIDER_WRITEBACK_EVENT(mem_cgroup_consider_fg_writeback);
+
+TRACE_EVENT(mem_cgroup_fg_writeback,
+	TP_PROTO(unsigned long write_chunk,
+		 long nr_written,
+		 unsigned short css_id,
+		 struct backing_dev_info *bdi,
+		 bool shared_inodes),
+
+	TP_ARGS(write_chunk, nr_written, css_id, bdi, shared_inodes),
+
+	TP_STRUCT__entry(
+		__field(unsigned long, write_chunk)
+		__field(long, nr_written)
+		__field(unsigned short, css_id)
+		__array(char, bdi_name, 32)
+		__field(bool, shared_inodes)
+	),
+
+	TP_fast_assign(
+		__entry->write_chunk = write_chunk;
+		__entry->nr_written = nr_written;
+		__entry->css_id = css_id;
+		strncpy(__entry->bdi_name, dev_name(bdi->dev), 32);
+		__entry->shared_inodes = shared_inodes;
+	),
+
+	TP_printk("css_id=%d bdi=%s write_chunk=%ld nr_written=%ld shared_inodes=%d",
+		  __entry->css_id,
+		  __entry->bdi_name,
+		  __entry->write_chunk,
+		  __entry->nr_written,
+		  __entry->shared_inodes)
+)
+
+TRACE_EVENT(mem_cgroup_enable_shared_writeback,
+	TP_PROTO(unsigned short css_id),
+
+	TP_ARGS(css_id),
+
+	TP_STRUCT__entry(
+		__field(unsigned short, css_id)
+		),
+
+	TP_fast_assign(
+		__entry->css_id = css_id;
+		),
+
+	TP_printk("enabling shared writeback for memcg %d", __entry->css_id)
 )
 
 #endif /* _TRACE_MEMCONTROL_H */

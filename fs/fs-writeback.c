@@ -780,14 +780,24 @@ static long __writeback_inodes_wb(struct bdi_writeback *wb,
 	return wrote;
 }
 
+/*
+ * @memcg: optional
+ * @shared_inodes: only significant if @memcg is specified
+ */
 long writeback_inodes_wb(struct bdi_writeback *wb, long nr_pages,
-				enum wb_reason reason)
+			 enum wb_reason reason, struct mem_cgroup *memcg,
+			 bool shared_inodes)
 {
 	struct wb_writeback_work work = {
 		.nr_pages	= nr_pages,
 		.sync_mode	= WB_SYNC_NONE,
+#ifdef CONFIG_MEMCG
+		.memcg_id	= memcg ? css_id(mem_cgroup_css(memcg)) : 0,
+#endif
 		.range_cyclic	= 1,
 		.reason		= reason,
+		.for_cgroup	= memcg != NULL,
+		.shared_inodes	= shared_inodes,
 	};
 
 	spin_lock(&wb->list_lock);
@@ -1113,7 +1123,8 @@ void bdi_writeback_workfn(struct work_struct *work)
 		 * enough for efficient IO.
 		 */
 		pages_written = writeback_inodes_wb(&bdi->wb, 1024,
-						    WB_REASON_FORKER_THREAD);
+						    WB_REASON_FORKER_THREAD,
+						    NULL, true);
 		trace_writeback_pages_written(pages_written);
 	}
 

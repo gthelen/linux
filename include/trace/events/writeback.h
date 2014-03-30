@@ -21,6 +21,7 @@
 	)
 
 #define WB_WORK_REASON							\
+		{WB_REASON_BALANCE_DIRTY,	"balance_dirty_pages"},	\
 		{WB_REASON_BACKGROUND,		"background"},		\
 		{WB_REASON_TRY_TO_FREE_PAGES,	"try_to_free_pages"},	\
 		{WB_REASON_SYNC,		"sync"},		\

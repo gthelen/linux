@@ -207,6 +207,11 @@ bool should_writeback_mem_cgroup_inode(struct inode *inode,
 				       bool shared_inodes);
 bool mem_cgroups_over_bg_dirty_thresh(void);
 void mem_cgroup_check_bg_dirty_thresh(void);
+bool mem_cgroup_hierarchical_dirty_info(unsigned long sys_available_mem,
+					struct mem_cgroup *memcg,
+					struct dirty_info *info);
+void mem_cgroup_balance_dirty_pages(struct address_space *mapping,
+				    unsigned long write_chunk);
 
 unsigned long mem_cgroup_soft_limit_reclaim(struct zone *zone, int order,
 						gfp_t gfp_mask,
@@ -405,6 +410,19 @@ static inline bool mem_cgroups_over_bg_dirty_thresh(void)
 
 static inline void mem_cgroup_check_bg_dirty_thresh(void)
 {
+}
+
+static inline void mem_cgroup_balance_dirty_pages(struct address_space *mapping,
+						  unsigned long write_chunk)
+{
+}
+
+static inline bool
+mem_cgroup_hierarchical_dirty_info(unsigned long sys_available_mem,
+				   struct mem_cgroup *memcg,
+				   struct dirty_info *info)
+{
+	return false;
 }
 
 static inline
