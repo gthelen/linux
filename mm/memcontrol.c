@@ -63,6 +63,9 @@
 
 #include <trace/events/vmscan.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/memcontrol.h>
+
 struct cgroup_subsys mem_cgroup_subsys __read_mostly;
 EXPORT_SYMBOL(mem_cgroup_subsys);
 
@@ -1471,6 +1474,27 @@ bool task_in_mem_cgroup(struct task_struct *task,
 	return ret;
 }
 
+/*
+ * Mark the current task's memcg as the memcg associated with inode.  Note: the
+ * recorded cgroup css_id is not guaranteed to remain correct.  The current task
+ * may be moved to another cgroup.  The memcg may also be deleted before the
+ * caller has time to use the i_memcg.
+ */
+void mem_cgroup_mark_inode_dirty(struct inode *inode)
+{
+	struct mem_cgroup *memcg;
+	unsigned short id;
+
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(current);
+	id = memcg ? css_id(&memcg->css) : I_MEMCG_SHARED;
+	rcu_read_unlock();
+
+	inode->i_mapping->i_memcg = id;
+
+	trace_mem_cgroup_mark_inode_dirty(inode);
+}
+
 int mem_cgroup_inactive_anon_is_low(struct lruvec *lruvec)
 {
 	unsigned long inactive_ratio;
@@ -2299,6 +2323,7 @@ void mem_cgroup_update_page_stat(struct page *page,
 	struct mem_cgroup *memcg;
 	struct page_cgroup *pc = lookup_page_cgroup(page);
 	unsigned long uninitialized_var(flags);
+	struct address_space *mapping;
 
 	if (mem_cgroup_disabled())
 		return;
@@ -2307,6 +2332,27 @@ void mem_cgroup_update_page_stat(struct page *page,
 	memcg = pc->mem_cgroup;
 	if (unlikely(!memcg || !PageCgroupUsed(pc)))
 		return;
+
+	switch (idx) {
+	case MEM_CGROUP_STAT_FILE_DIRTY:
+		if (val > 0) {
+			mapping = page_mapping(page);
+			if (mapping &&
+			    (mapping->i_memcg != I_MEMCG_SHARED) &&
+			    (mapping->i_memcg != css_id(&memcg->css)))
+				/*
+				 * If the inode is being dirtied by a memcg
+				 * other than the one that marked it dirty, then
+				 * mark the inode shared by multiple memcg.
+				 */
+				mapping->i_memcg = I_MEMCG_SHARED;
+		}
+		break;
+
+	default:
+		/* silence compiler by having a do-nothing default case. */
+		break;
+	}
 
 	this_cpu_add(memcg->stat->count[idx], val);
 }
@@ -3815,9 +3861,21 @@ static int mem_cgroup_move_account(struct page *page,
 	if (!anon && PageDirty(page)) {
 		struct address_space *mapping = page_mapping(page);
 
-		if (mapping && mapping_cap_account_dirty(mapping))
+		if (mapping && mapping_cap_account_dirty(mapping)) {
 			mem_cgroup_move_account_page_stat(from, to, nr_pages,
-						MEM_CGROUP_STAT_FILE_DIRTY);
+							  MEM_CGROUP_STAT_FILE_DIRTY);
+
+			/*
+			 * Moving a dirty file page between memcg makes the
+			 * underlying inode shared.  If the new (to) cgroup
+			 * attempts writeback it should consider this inode.  If
+			 * the old (from) cgroup attempts writeback it likely
+			 * has other pages in the same inode.  The inode is now
+			 * shared by the to and from cgroups.  So mark the inode
+			 * as shared.
+			 */
+			page_mapping(page)->i_memcg = I_MEMCG_SHARED;
+		}
 	}
 
 	if (PageWriteback(page))

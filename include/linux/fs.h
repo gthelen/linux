@@ -422,6 +422,9 @@ struct address_space {
 	spinlock_t		private_lock;	/* for use by the address_space */
 	struct list_head	private_list;	/* ditto */
 	void			*private_data;	/* ditto */
+#ifdef CONFIG_MEMCG
+	unsigned short		i_memcg;	/* css_id of memcg dirtier */
+#endif
 } __attribute__((aligned(sizeof(long))));
 	/*
 	 * On most architectures that alignment is already the case; but
@@ -429,6 +432,12 @@ struct address_space {
 	 * of struct page's "mapping" pointer be used for PAGE_MAPPING_ANON.
 	 */
 struct request_queue;
+
+/*
+ * When an address_space is shared by multiple memcg dirtiers, then i_memcg is
+ * set to this special, wildcard, css_id value (zero).
+ */
+#define I_MEMCG_SHARED 0
 
 struct block_device {
 	dev_t			bd_dev;  /* not a kdev_t - it's a search key */

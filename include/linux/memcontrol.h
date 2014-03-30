@@ -126,6 +126,8 @@ struct mem_cgroup *mem_cgroup_iter(struct mem_cgroup *,
 				   struct mem_cgroup_reclaim_cookie *);
 void mem_cgroup_iter_break(struct mem_cgroup *, struct mem_cgroup *);
 
+void mem_cgroup_mark_inode_dirty(struct inode *inode);
+
 /*
  * For memory reclaim.
  */
@@ -320,6 +322,10 @@ mem_cgroup_iter(struct mem_cgroup *root,
 
 static inline void mem_cgroup_iter_break(struct mem_cgroup *root,
 					 struct mem_cgroup *prev)
+{
+}
+
+static inline void mem_cgroup_mark_inode_dirty(struct inode *inode)
 {
 }
 
