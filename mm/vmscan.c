@@ -1943,7 +1943,8 @@ out:
 /*
  * This is a basic per-zone page freer.  Used by both kswapd and direct reclaim.
  */
-static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc,
+			  struct mem_cgroup *memcg)
 {
 	unsigned long nr[NR_LRU_LISTS];
 	unsigned long targets[NR_LRU_LISTS];
@@ -2040,7 +2041,7 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 		shrink_active_list(SWAP_CLUSTER_MAX, lruvec,
 				   sc, LRU_ACTIVE_ANON);
 
-	throttle_vm_writeout(sc->gfp_mask);
+	throttle_vm_writeout(sc->gfp_mask, memcg);
 }
 
 /* Use reclaim/compaction for costly allocs or under memory pressure */
@@ -2139,7 +2140,7 @@ static void shrink_zone(struct zone *zone, struct scan_control *sc)
 
 			lruvec = mem_cgroup_zone_lruvec(zone, memcg);
 
-			shrink_lruvec(lruvec, sc);
+			shrink_lruvec(lruvec, sc, memcg);
 
 			/*
 			 * Direct reclaim and kswapd have to scan all memory
@@ -2593,7 +2594,7 @@ unsigned long mem_cgroup_shrink_node_zone(struct mem_cgroup *memcg,
 	 * will pick up pages from other mem cgroup's as well. We hack
 	 * the priority and make it zero.
 	 */
-	shrink_lruvec(lruvec, &sc);
+	shrink_lruvec(lruvec, &sc, memcg);
 
 	trace_mm_vmscan_memcg_softlimit_reclaim_end(sc.nr_reclaimed);
 
