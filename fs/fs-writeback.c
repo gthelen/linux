@@ -232,6 +232,29 @@ static bool inode_dirtied_after(struct inode *inode, unsigned long t)
 	return ret;
 }
 
+
+static int inode_needs_writeback(struct inode *inode,
+				struct wb_writeback_work *work)
+{
+	unsigned long expire;
+
+	/* XXX: This is temporary, until we have memcg-aware WB */
+	return 1;
+
+	/*
+	 * Even if the inode doesn't intersect the nodemask, do *background*
+	 * writeback on it if it's a "really old inode."  Arbitrarily using
+	 * 2 * dirty_expire_centisecs here.
+	 */
+	expire = jiffies - (2 * msecs_to_jiffies(dirty_expire_interval * 10));
+
+	if (work->for_background && !inode_dirtied_after(inode, expire))
+		return 1;
+
+	return 0;
+}
+
+
 /*
  * Move expired (dirtied before work->older_than_this) dirty inodes from
  * @delaying_queue to @dispatch_queue.
@@ -243,15 +266,20 @@ static int move_expired_inodes(struct list_head *delaying_queue,
 	LIST_HEAD(tmp);
 	struct list_head *pos, *node;
 	struct super_block *sb = NULL;
-	struct inode *inode;
+	struct inode *inode, *tmp_node;
 	int do_sb_sort = 0;
 	int moved = 0;
 
-	while (!list_empty(delaying_queue)) {
-		inode = wb_inode(delaying_queue->prev);
+	list_for_each_entry_safe_reverse(inode, tmp_node,
+					delaying_queue, i_wb_list) {
 		if (work->older_than_this &&
 		    inode_dirtied_after(inode, *work->older_than_this))
 			break;
+
+		/* Check this inode for really old inodes */
+		if (!inode_needs_writeback(inode, work))
+			continue;
+
 		if (sb && sb != inode->i_sb)
 			do_sb_sort = 1;
 		sb = inode->i_sb;
