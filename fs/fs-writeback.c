@@ -42,11 +42,14 @@ struct wb_writeback_work {
 	struct super_block *sb;
 	unsigned long *older_than_this;
 	enum writeback_sync_modes sync_mode;
+	unsigned short memcg_id;
 	unsigned int tagged_writepages:1;
 	unsigned int for_kupdate:1;
 	unsigned int range_cyclic:1;
 	unsigned int for_background:1;
 	unsigned int for_sync:1;	/* sync(2) WB_SYNC_ALL writeback */
+	unsigned int for_cgroup:1;
+	unsigned int shared_inodes:1;
 	enum wb_reason reason;		/* why was writeback initiated? */
 
 	struct list_head list;		/* pending work list */
@@ -103,7 +106,8 @@ static void bdi_queue_work(struct backing_dev_info *bdi,
 
 static void
 __bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
-		      bool range_cyclic, enum wb_reason reason)
+		      bool range_cyclic, enum wb_reason reason,
+		      struct mem_cgroup *memcg)
 {
 	struct wb_writeback_work *work;
 
@@ -122,6 +126,10 @@ __bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
 	work->nr_pages	= nr_pages;
 	work->range_cyclic = range_cyclic;
 	work->reason	= reason;
+#ifdef CONFIG_MEMCG
+	work->memcg_id = memcg ? css_id(mem_cgroup_css(memcg)) : 0;
+	work->for_cgroup = memcg != NULL;
+#endif
 
 	bdi_queue_work(bdi, work);
 }
@@ -131,6 +139,7 @@ __bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
  * @bdi: the backing device to write from
  * @nr_pages: the number of pages to write
  * @reason: reason why some writeback work was initiated
+ * @memcg: only write inodes from this optional memory cgroup
  *
  * Description:
  *   This does WB_SYNC_NONE opportunistic writeback. The IO is only
@@ -139,9 +148,9 @@ __bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
  *
  */
 void bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
-			enum wb_reason reason)
+			enum wb_reason reason, struct mem_cgroup *memcg)
 {
-	__bdi_start_writeback(bdi, nr_pages, true, reason);
+	__bdi_start_writeback(bdi, nr_pages, true, reason, memcg);
 }
 
 /**
@@ -236,10 +245,19 @@ static bool inode_dirtied_after(struct inode *inode, unsigned long t)
 static int inode_needs_writeback(struct inode *inode,
 				struct wb_writeback_work *work)
 {
+#ifdef CONFIG_MEMCG
 	unsigned long expire;
 
-	/* XXX: This is temporary, until we have memcg-aware WB */
-	return 1;
+	if (!work->for_cgroup)
+		return 1;
+
+	/*
+	 * If doing per-memcg writeback, check with memcg to see if the inode
+	 * should be written.
+	 */
+	if (should_writeback_mem_cgroup_inode(inode, work->memcg_id,
+					      work->shared_inodes))
+		return 1;
 
 	/*
 	 * Even if the inode doesn't intersect the nodemask, do *background*
@@ -252,6 +270,13 @@ static int inode_needs_writeback(struct inode *inode,
 		return 1;
 
 	return 0;
+#else
+	/*
+	 * For kernels without memcg containers, then every inode is a writeback
+	 * candidate.
+	 */
+	return 1;
+#endif
 }
 
 
@@ -276,7 +301,10 @@ static int move_expired_inodes(struct list_head *delaying_queue,
 		    inode_dirtied_after(inode, *work->older_than_this))
 			break;
 
-		/* Check this inode for really old inodes */
+		/*
+		 * Check this inode against the container, and for really old
+		 * inodes.
+		 */
 		if (!inode_needs_writeback(inode, work))
 			continue;
 
@@ -771,19 +799,43 @@ long writeback_inodes_wb(struct bdi_writeback *wb, long nr_pages,
 	return nr_pages - work.nr_pages;
 }
 
-static bool over_bground_thresh(struct backing_dev_info *bdi)
+static bool over_bground_thresh(struct backing_dev_info *bdi,
+				struct wb_writeback_work *work)
 {
 	unsigned long background_thresh, dirty_thresh;
 
 	global_dirty_limits(&background_thresh, &dirty_thresh);
 
 	if (global_page_state(NR_FILE_DIRTY) +
-	    global_page_state(NR_UNSTABLE_NFS) > background_thresh)
+	    global_page_state(NR_UNSTABLE_NFS) > background_thresh) {
+		work->for_cgroup = 0;
 		return true;
+	}
 
 	if (bdi_stat(bdi, BDI_RECLAIMABLE) >
-				bdi_dirty_limit(bdi, background_thresh))
+				bdi_dirty_limit(bdi, background_thresh)) {
+		work->for_cgroup = 0;
 		return true;
+	}
+
+	/*
+	 * System dirty memory is below system background limit.  Check if any
+	 * memcg are over memcg background limit.
+	 */
+	if (mem_cgroups_over_bg_dirty_thresh()) {
+		work->for_cgroup = 1;
+
+		/*
+		 * Set shared_inodes so that background flusher writes shared
+		 * inodes in addition to inodes in over-limit memcg.  Such
+		 * shared inodes should be rarer than inodes written by a single
+		 * memcg.  Shared inodes limit the ability to map from memcg to
+		 * inode in wakeup_flusher_threads() and writeback_inodes_wb().
+		 * So the quicker such shared inodes are written, the better.
+		 */
+		work->shared_inodes = 1;
+		return true;
+	}
 
 	return false;
 }
@@ -847,7 +899,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		 * For background writeout, stop when we are below the
 		 * background dirty threshold
 		 */
-		if (work->for_background && !over_bground_thresh(wb->bdi))
+		if (work->for_background && !over_bground_thresh(wb->bdi, work))
 			break;
 
 		/*
@@ -872,6 +924,11 @@ static long wb_writeback(struct bdi_writeback *wb,
 		trace_writeback_written(wb->bdi, work);
 
 		wb_update_bandwidth(wb, wb_start);
+
+		/* must drop spinlock to allow sleeping */
+		spin_unlock(&wb->list_lock);
+		mem_cgroup_check_bg_dirty_thresh();
+		spin_lock(&wb->list_lock);
 
 		/*
 		 * Did we write something? Try for more
@@ -939,18 +996,16 @@ static unsigned long get_nr_dirty_pages(void)
 
 static long wb_check_background_flush(struct bdi_writeback *wb)
 {
-	if (over_bground_thresh(wb->bdi)) {
+	struct wb_writeback_work work = {
+		.nr_pages	= LONG_MAX,
+		.sync_mode	= WB_SYNC_NONE,
+		.for_background	= 1,
+		.range_cyclic	= 1,
+		.reason		= WB_REASON_BACKGROUND,
+	};
 
-		struct wb_writeback_work work = {
-			.nr_pages	= LONG_MAX,
-			.sync_mode	= WB_SYNC_NONE,
-			.for_background	= 1,
-			.range_cyclic	= 1,
-			.reason		= WB_REASON_BACKGROUND,
-		};
-
+	if (over_bground_thresh(wb->bdi, &work))
 		return wb_writeback(wb, &work);
-	}
 
 	return 0;
 }
@@ -1072,9 +1127,11 @@ void bdi_writeback_workfn(struct work_struct *work)
 
 /*
  * Start writeback of `nr_pages' pages.  If `nr_pages' is zero, write back
- * the whole world.
+ * the whole world.  If 'memcg' is non-NULL, then limit attempt to only write
+ * pages from the specified cgroup.
  */
-void wakeup_flusher_threads(long nr_pages, enum wb_reason reason)
+void wakeup_flusher_threads(long nr_pages, enum wb_reason reason,
+			    struct mem_cgroup *memcg)
 {
 	struct backing_dev_info *bdi;
 
@@ -1087,7 +1144,7 @@ void wakeup_flusher_threads(long nr_pages, enum wb_reason reason)
 	list_for_each_entry_rcu(bdi, &bdi_list, bdi_list) {
 		if (!bdi_has_dirty_io(bdi))
 			continue;
-		__bdi_start_writeback(bdi, nr_pages, false, reason);
+		__bdi_start_writeback(bdi, nr_pages, false, reason, memcg);
 	}
 	rcu_read_unlock();
 }

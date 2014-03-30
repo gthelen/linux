@@ -2396,7 +2396,8 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
 		writeback_threshold = sc->nr_to_reclaim + sc->nr_to_reclaim / 2;
 		if (total_scanned > writeback_threshold) {
 			wakeup_flusher_threads(laptop_mode ? 0 : total_scanned,
-						WB_REASON_TRY_TO_FREE_PAGES);
+					       WB_REASON_TRY_TO_FREE_PAGES,
+					       sc->target_mem_cgroup);
 			sc->may_writepage = 1;
 		}
 	} while (--sc->priority >= 0 && !aborted_reclaim);

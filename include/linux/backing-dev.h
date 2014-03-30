@@ -23,6 +23,7 @@
 struct page;
 struct device;
 struct dentry;
+struct mem_cgroup;
 
 /*
  * Bits in backing_dev_info.state
@@ -119,7 +120,7 @@ int bdi_register_dev(struct backing_dev_info *bdi, dev_t dev);
 void bdi_unregister(struct backing_dev_info *bdi);
 int bdi_setup_and_register(struct backing_dev_info *, char *, unsigned int);
 void bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
-			enum wb_reason reason);
+			enum wb_reason reason, struct mem_cgroup *memcg);
 void bdi_start_background_writeback(struct backing_dev_info *bdi);
 void bdi_writeback_workfn(struct work_struct *work);
 int bdi_has_dirty_io(struct backing_dev_info *bdi);

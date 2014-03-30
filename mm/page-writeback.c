@@ -1566,7 +1566,7 @@ void laptop_mode_timer_fn(unsigned long data)
 	 */
 	if (bdi_has_dirty_io(&q->backing_dev_info))
 		bdi_start_writeback(&q->backing_dev_info, nr_pages,
-					WB_REASON_LAPTOP_TIMER);
+				    WB_REASON_LAPTOP_TIMER, NULL);
 }
 
 /*

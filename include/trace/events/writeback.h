@@ -149,9 +149,11 @@ DECLARE_EVENT_CLASS(writeback_work_class,
 		__field(long, nr_pages)
 		__field(dev_t, sb_dev)
 		__field(int, sync_mode)
+		__field(unsigned short, memcg_id)
 		__field(int, for_kupdate)
 		__field(int, range_cyclic)
 		__field(int, for_background)
+		__field(int, shared_inodes)
 		__field(int, reason)
 	),
 	TP_fast_assign(
@@ -162,17 +164,20 @@ DECLARE_EVENT_CLASS(writeback_work_class,
 		__entry->nr_pages = work->nr_pages;
 		__entry->sb_dev = work->sb ? work->sb->s_dev : 0;
 		__entry->sync_mode = work->sync_mode;
+		__entry->memcg_id = work->memcg_id;
 		__entry->for_kupdate = work->for_kupdate;
 		__entry->range_cyclic = work->range_cyclic;
 		__entry->for_background	= work->for_background;
+		__entry->shared_inodes = work->shared_inodes;
 		__entry->reason = work->reason;
 	),
-	TP_printk("bdi %s: sb_dev %d:%d nr_pages=%ld sync_mode=%d "
-		  "kupdate=%d range_cyclic=%d background=%d reason=%s",
+	TP_printk("bdi %s: sb_dev %d:%d nr_pages=%ld sync_mode=%d memcg_id %d shared_inodes %d kupdate=%d range_cyclic=%d background=%d reason=%s",
 		  __entry->name,
 		  MAJOR(__entry->sb_dev), MINOR(__entry->sb_dev),
 		  __entry->nr_pages,
 		  __entry->sync_mode,
+		  __entry->memcg_id,
+		  __entry->shared_inodes,
 		  __entry->for_kupdate,
 		  __entry->range_cyclic,
 		  __entry->for_background,
