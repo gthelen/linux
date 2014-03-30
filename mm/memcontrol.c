@@ -238,6 +238,8 @@ struct mem_cgroup_eventfd_list {
 
 static void mem_cgroup_threshold(struct mem_cgroup *memcg);
 static void mem_cgroup_oom_notify(struct mem_cgroup *memcg);
+static unsigned long mem_cgroup_recursive_stat(struct mem_cgroup *memcg,
+					       enum mem_cgroup_stat_index idx);
 
 /* Dirty memory parameters */
 struct vm_dirty_param {
@@ -1592,6 +1594,102 @@ static void mem_cgroup_dirty_param(struct vm_dirty_param *param,
 		param->dirty_background_ratio = dirty_background_ratio;
 		param->dirty_background_bytes = dirty_background_bytes;
 	}
+}
+
+/*
+ * Return the number of additional pages that the @memcg cgroup could allocate.
+ * If use_hierarchy is set, then this involves checking parent mem cgroups to
+ * find the cgroup with the smallest free space.  This routine stops at the root
+ * memcg which has a limit of zero.
+ */
+static unsigned long
+mem_cgroup_hierarchical_free_pages(struct mem_cgroup *memcg)
+{
+	u64 free;
+	unsigned long min_free;
+
+	min_free = global_page_state(NR_FREE_PAGES);
+
+	/*
+	 * Walk up tree stopping either when root is reached or we've left a
+	 * hierarchy.
+	 */
+	while (memcg && !mem_cgroup_is_root(memcg)) {
+		free = res_counter_margin(&memcg->res) >> PAGE_SHIFT;
+		min_free = min_t(u64, min_free, free);
+		memcg = parent_mem_cgroup(memcg);
+	}
+
+	return min_free;
+}
+
+/*
+ * mem_cgroup_get_lru_pages - returns the number of lru pages under memcg's
+ * hierarchy.
+ * @root: memcg that is target of the reclaim
+ */
+unsigned long mem_cgroup_get_lru_pages(struct mem_cgroup *root)
+{
+	unsigned long nr = 0;
+	struct mem_cgroup *memcg;
+	unsigned int lru_mask;
+
+	VM_BUG_ON(!root);
+
+	memcg = mem_cgroup_iter(root, NULL, NULL);
+	do {
+		lru_mask = LRU_ALL_FILE;
+
+		/* NOTE: This isn't right, but it works if swap is disabled. */
+		if (get_nr_swap_pages() > 0)
+			lru_mask |= LRU_ALL_ANON;
+
+		nr += mem_cgroup_nr_lru_pages(memcg, lru_mask);
+
+		memcg = mem_cgroup_iter(root, memcg, NULL);
+	} while (memcg);
+
+	return nr;
+}
+
+/* Return dirty thresholds and usage for @memcg. */
+static void mem_cgroup_dirty_info(unsigned long sys_available_mem,
+				  struct mem_cgroup *memcg,
+				  struct dirty_info *info)
+{
+	unsigned long uninitialized_var(available_mem);
+	struct vm_dirty_param dirty_param;
+
+	mem_cgroup_dirty_param(&dirty_param, memcg);
+
+	if (!dirty_param.dirty_bytes || !dirty_param.dirty_background_bytes)
+		available_mem = min(
+			sys_available_mem,
+			mem_cgroup_hierarchical_free_pages(memcg) +
+			mem_cgroup_get_lru_pages(memcg));
+
+	if (dirty_param.dirty_bytes)
+		info->dirty_thresh =
+			DIV_ROUND_UP(dirty_param.dirty_bytes, PAGE_SIZE);
+	else
+		info->dirty_thresh =
+			(dirty_param.dirty_ratio * available_mem) / 100;
+
+	if (dirty_param.dirty_background_bytes)
+		info->background_thresh =
+			DIV_ROUND_UP(dirty_param.dirty_background_bytes,
+				     PAGE_SIZE);
+	else
+		info->background_thresh =
+			(dirty_param.dirty_background_ratio *
+			       available_mem) / 100;
+
+	info->nr_file_dirty = mem_cgroup_recursive_stat(memcg,
+						MEM_CGROUP_STAT_FILE_DIRTY);
+	info->nr_writeback = mem_cgroup_recursive_stat(memcg,
+						MEM_CGROUP_STAT_WRITEBACK);
+
+	trace_mem_cgroup_dirty_info(css_id(&memcg->css), info);
 }
 
 /*

@@ -48,6 +48,13 @@ enum mem_cgroup_stat_index {
 	MEM_CGROUP_STAT_NSTATS,
 };
 
+struct dirty_info {
+	unsigned long dirty_thresh;
+	unsigned long background_thresh;
+	unsigned long nr_file_dirty;
+	unsigned long nr_writeback;
+};
+
 struct mem_cgroup_reclaim_cookie {
 	struct zone *zone;
 	int priority;
