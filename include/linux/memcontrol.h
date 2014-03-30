@@ -214,6 +214,7 @@ void mem_cgroup_inc_writeback_stat(struct writeback_control *wbc,
 bool mem_cgroup_hierarchical_dirty_info(unsigned long sys_available_mem,
 					struct mem_cgroup *memcg,
 					struct dirty_info *info);
+bool mem_cgroup_need_balance_dirty_pages(void);
 void mem_cgroup_balance_dirty_pages(struct address_space *mapping,
 				    unsigned long write_chunk);
 
@@ -420,6 +421,11 @@ static inline void mem_cgroup_inc_writeback_stat(struct writeback_control *wbc,
 						 struct inode *inode,
 						 unsigned long nr_pages)
 {
+}
+
+static inline bool mem_cgroup_need_balance_dirty_pages(void)
+{
+	return false;
 }
 
 static inline void mem_cgroup_balance_dirty_pages(struct address_space *mapping,

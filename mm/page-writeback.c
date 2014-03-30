@@ -1490,7 +1490,8 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
 	p =  &__get_cpu_var(bdp_ratelimits);
 	if (unlikely(current->nr_dirtied >= ratelimit))
 		*p = 0;
-	else if (unlikely(*p >= ratelimit_pages)) {
+	else if (unlikely(*p >= ratelimit_pages ||
+			  mem_cgroup_need_balance_dirty_pages())) {
 		*p = 0;
 		ratelimit = 0;
 	}

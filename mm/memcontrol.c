@@ -316,6 +316,15 @@ struct mem_cgroup {
 	 * Should the accounting and control be hierarchical, per subtree?
 	 */
 	bool use_hierarchy;
+
+	/*
+	 * Should mem_cgroup_balance_dirty_pages() be called soon?  This is set
+	 * when a periodic check of dirty usage notices that usage is above
+	 * threshold.  This is a caching hint and is modified in racy fashion
+	 * without a lock.
+	 */
+	bool		need_dirty_balance;
+
 	unsigned long kmem_account_flags; /* See KMEM_ACCOUNTED_*, below */
 
 	bool		oom_lock;
@@ -1948,6 +1957,26 @@ void mem_cgroup_inc_writeback_stat(struct writeback_control *wbc,
 }
 
 /*
+ * Used by callers to know if a call to mem_cgroup_balance_dirty_pages() has
+ * been requested.  If true is returned, then it is very likely that the cgroup
+ * is over its dirty limit.  A false return value does not mean that
+ * mem_cgroup_balance_dirty_pages() shouldn't ever be called, just that it can
+ * be called in a normal rate limited fashion to periodically check usage.
+ */
+bool mem_cgroup_need_balance_dirty_pages(void)
+{
+	struct mem_cgroup *memcg;
+	bool need_balance;
+
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(current);
+	need_balance = memcg && memcg->need_dirty_balance;
+	rcu_read_unlock();
+
+	return need_balance;
+}
+
+/*
  * Determine if the given memcg's dirty and dirty+writeback memory usage are
  * over the memcg's foreground dirty limit.
  */
@@ -2052,6 +2081,13 @@ void mem_cgroup_balance_dirty_pages(struct address_space *mapping,
 		id = css_id(&memcg->css);
 
 		/*
+		 * this cgroup is being balanced here, so cancel request for
+		 * future balancing.
+		 */
+		if (memcg->need_dirty_balance)
+			memcg->need_dirty_balance = false;
+
+		/*
 		 * Keep throttling and writing inode data so long as memcg is
 		 * over its dirty limit.  Inode being written by multiple memcg
 		 * (aka shared_inodes) cannot easily be attributed a particular
@@ -2143,9 +2179,13 @@ bool mem_cgroup_hierarchical_dirty_info(unsigned long sys_available_mem,
 		usage = dirty_info_reclaimable(&cur_info) +
 			cur_info.nr_writeback;
 
-		/* if over limit, stop searching */
+		/*
+		 * if over limit, stop searching and advertise that memcg would
+		 * benefit from a call to mem_cgroup_balance_dirty_pages().
+		 */
 		if (usage >= cur_info.dirty_thresh) {
 			*info = cur_info;
+			memcg->need_dirty_balance = true;
 			break;
 		}
 
