@@ -894,6 +894,39 @@ mem_cgroup_largest_soft_limit_node(struct mem_cgroup_tree_per_zone *mctz)
 }
 
 /*
+ * If non-zero, then memcg->pcp_counter_lock is needed to sum memcg per cpu
+ * counters.  This counter and the related pcp_counter_lock are used to avoid
+ * using get_online_cpus() in the reclaim path which conflicts with callsites
+ * which allocate GFP_KERNEL memory while holding get_online_cpus().  If this
+ * memcg_cpu_draining is zero, then the fast path (without grabbing
+ * pcp_counter_lock) is allowed.  This mimics the memcg_moving locking scheme.
+ */
+static atomic_t memcg_cpu_draining __read_mostly;
+
+/*
+ * Lock memcg per cpu counters against cpu hotplug.  This is needed when summing
+ * all per cpu counters to determine a machine wide value.
+ * memcg_unlock_pcp_counters() is used to unlock.
+ */
+static bool memcg_lock_pcp_counters(struct mem_cgroup *memcg)
+{
+	rcu_read_lock();
+	if (atomic_read(&memcg_cpu_draining)) {
+		spin_lock(&memcg->pcp_counter_lock);
+		return true;
+	}
+	return false;
+}
+
+/* Drop lock grabbed by memcg_lock_pcp_counters(). */
+static void memcg_unlock_pcp_counters(struct mem_cgroup *memcg, bool locked)
+{
+	if (locked)
+		spin_unlock(&memcg->pcp_counter_lock);
+	rcu_read_unlock();
+}
+
+/*
  * Implementation Note: reading percpu statistics for memcg.
  *
  * Both of vmstat[] and percpu_counter has threshold and do periodic
@@ -917,16 +950,16 @@ static long mem_cgroup_read_stat(struct mem_cgroup *memcg,
 {
 	long val = 0;
 	int cpu;
+	bool locked;
 
-	get_online_cpus();
+	locked = memcg_lock_pcp_counters(memcg);
 	for_each_online_cpu(cpu)
 		val += per_cpu(memcg->stat->count[idx], cpu);
 #ifdef CONFIG_HOTPLUG_CPU
-	spin_lock(&memcg->pcp_counter_lock);
 	val += memcg->nocpu_base.count[idx];
-	spin_unlock(&memcg->pcp_counter_lock);
 #endif
-	put_online_cpus();
+	memcg_unlock_pcp_counters(memcg, locked);
+
 	return val;
 }
 
@@ -942,14 +975,15 @@ static unsigned long mem_cgroup_read_events(struct mem_cgroup *memcg,
 {
 	unsigned long val = 0;
 	int cpu;
+	bool locked;
 
+	locked = memcg_lock_pcp_counters(memcg);
 	for_each_online_cpu(cpu)
 		val += per_cpu(memcg->stat->events[idx], cpu);
 #ifdef CONFIG_HOTPLUG_CPU
-	spin_lock(&memcg->pcp_counter_lock);
 	val += memcg->nocpu_base.events[idx];
-	spin_unlock(&memcg->pcp_counter_lock);
 #endif
+	memcg_unlock_pcp_counters(memcg, locked);
 	return val;
 }
 
@@ -3252,17 +3286,31 @@ static int memcg_cpu_hotplug_callback(struct notifier_block *nb,
 	struct memcg_stock_pcp *stock;
 	struct mem_cgroup *iter;
 
-	if (action == CPU_ONLINE)
-		return NOTIFY_OK;
-
-	if (action != CPU_DEAD && action != CPU_DEAD_FROZEN)
-		return NOTIFY_OK;
-
-	for_each_mem_cgroup(iter)
-		mem_cgroup_drain_pcp_counter(iter, cpu);
-
-	stock = &per_cpu(memcg_stock, cpu);
-	drain_stock(stock);
+	switch (action) {
+	case CPU_DOWN_PREPARE:
+	case CPU_DOWN_PREPARE_FROZEN:
+		VM_BUG_ON(!cpu_online(cpu));
+		atomic_inc(&memcg_cpu_draining);
+		/*
+		 * Our caller ensures synchronize_rcu() between this function's
+		 * CPU_DOWN_PREPARE/_FROZEN and CPU_DEAD/_FROZEN processing.
+		 * This rcu barrier ensures that other tasks see non-zero
+		 * memcg_cpu_draining and thus grab pcp_counter_lock.
+		 */
+		break;
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+		VM_BUG_ON(cpu_online(cpu));
+		for_each_mem_cgroup(iter)
+			mem_cgroup_drain_pcp_counter(iter, cpu);
+		stock = &per_cpu(memcg_stock, cpu);
+		drain_stock(stock);
+		/* fall through */
+	case CPU_DOWN_FAILED:
+		/* unwind CPU_DOWN_PREPARE/CPU_DOWN_PREPARE_FROZEN */
+		atomic_dec(&memcg_cpu_draining);
+		break;
+	}
 	return NOTIFY_OK;
 }
 
