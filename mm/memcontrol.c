@@ -90,6 +90,7 @@ static const char * const mem_cgroup_stat_names[] = {
 	"rss",
 	"rss_huge",
 	"mapped_file",
+	"dirty",
 	"writeback",
 	"swap",
 };
@@ -2043,8 +2044,35 @@ void mem_cgroup_update_page_stat(struct mem_cgroup *memcg,
 {
 	VM_BUG_ON(!rcu_read_lock_held());
 
+	/* use mem_cgroup_update_nr_dirty() for dirty page accounting */
+	VM_BUG_ON(idx == MEM_CGROUP_STAT_DIRTY);
+
 	if (memcg)
 		this_cpu_add(memcg->stat->count[idx], val);
+}
+
+void mem_cgroup_update_nr_dirty(struct page *page, int delta)
+{
+	struct mem_cgroup *memcg;
+
+	/*
+	 * Callers hold a page reference which protects against uncharging so
+	 * pc->mem_cgroup is stable.  Cleaners hold page locked when
+	 * decrementing nr_dirty.  There are some dirtiers
+	 * (e.g. zap_pte_range()) which do not hold page lock, but they don't
+	 * seem to apply to mapping_cap_account_dirty() mappings with unset
+	 * PG_dirty.
+	 *
+	 * To serialize with mem_cgroup_move_account() caller must have locked
+	 * page before modifying PG_dirty and calling this function.
+	 */
+	VM_BUG_ON_PAGE(page_mapped(page) && !PageLocked(page), page);
+
+	memcg = page->mem_cgroup;
+	if (!memcg)
+		return;
+
+	this_cpu_add(memcg->stat->count[MEM_CGROUP_STAT_DIRTY], delta);
 }
 
 /*
@@ -4745,6 +4773,7 @@ static int mem_cgroup_move_account(struct page *page,
 				   struct mem_cgroup *to)
 {
 	unsigned long flags;
+	bool anon;
 	int ret;
 
 	VM_BUG_ON(from == to);
@@ -4771,13 +4800,30 @@ static int mem_cgroup_move_account(struct page *page,
 	if (page->mem_cgroup != from)
 		goto out_unlock;
 
+	anon = PageAnon(page);
+
 	spin_lock_irqsave(&from->move_lock, flags);
 
-	if (!PageAnon(page) && page_mapped(page)) {
+	if (!anon && page_mapped(page)) {
 		__this_cpu_sub(from->stat->count[MEM_CGROUP_STAT_FILE_MAPPED],
 			       nr_pages);
 		__this_cpu_add(to->stat->count[MEM_CGROUP_STAT_FILE_MAPPED],
 			       nr_pages);
+	}
+
+	/*
+	 * PG_lock grabbed above serializes with updates to PageDirty.  So
+	 * mapping should be stable for dirty pages.
+	 */
+	if (!anon && PageDirty(page)) {
+		struct address_space *mapping = page_mapping(page);
+
+		if (mapping_cap_account_dirty(mapping)) {
+			__this_cpu_sub(from->stat->count[MEM_CGROUP_STAT_DIRTY],
+				       nr_pages);
+			__this_cpu_add(to->stat->count[MEM_CGROUP_STAT_DIRTY],
+				       nr_pages);
+		}
 	}
 
 	if (PageWriteback(page)) {

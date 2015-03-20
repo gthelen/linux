@@ -41,6 +41,7 @@ enum mem_cgroup_stat_index {
 	MEM_CGROUP_STAT_RSS,		/* # of pages charged as anon rss */
 	MEM_CGROUP_STAT_RSS_HUGE,	/* # of pages charged as anon huge */
 	MEM_CGROUP_STAT_FILE_MAPPED,	/* # of pages charged as file rss */
+	MEM_CGROUP_STAT_DIRTY,          /* # of dirty pages in page cache */
 	MEM_CGROUP_STAT_WRITEBACK,	/* # of pages under writeback */
 	MEM_CGROUP_STAT_SWAP,		/* # of pages, swapped out */
 	MEM_CGROUP_STAT_NSTATS,
@@ -162,6 +163,7 @@ static inline bool mem_cgroup_disabled(void)
 struct mem_cgroup *mem_cgroup_begin_page_stat(struct page *page);
 void mem_cgroup_update_page_stat(struct mem_cgroup *memcg,
 				 enum mem_cgroup_stat_index idx, int val);
+void mem_cgroup_update_nr_dirty(struct page *page, int delta);
 void mem_cgroup_end_page_stat(struct mem_cgroup *memcg);
 
 static inline void mem_cgroup_inc_page_stat(struct mem_cgroup *memcg,
@@ -355,6 +357,10 @@ static inline void mem_cgroup_inc_page_stat(struct mem_cgroup *memcg,
 
 static inline void mem_cgroup_dec_page_stat(struct mem_cgroup *memcg,
 					    enum mem_cgroup_stat_index idx)
+{
+}
+
+static inline void mem_cgroup_update_nr_dirty(struct page *page, int delta)
 {
 }
 

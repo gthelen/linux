@@ -2099,6 +2099,7 @@ void account_page_dirtied(struct page *page, struct address_space *mapping)
 	if (mapping_cap_account_dirty(mapping)) {
 		struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
 
+		mem_cgroup_update_nr_dirty(page, 1);
 		__inc_zone_page_state(page, NR_FILE_DIRTY);
 		__inc_zone_page_state(page, NR_DIRTIED);
 		__inc_bdi_stat(bdi, BDI_RECLAIMABLE);
@@ -2122,6 +2123,7 @@ EXPORT_SYMBOL(account_page_dirtied);
 void account_page_cleaned(struct page *page, struct address_space *mapping)
 {
 	if (mapping_cap_account_dirty(mapping)) {
+		mem_cgroup_update_nr_dirty(page, -1);
 		dec_zone_page_state(page, NR_FILE_DIRTY);
 		dec_bdi_stat(inode_to_bdi(mapping->host), BDI_RECLAIMABLE);
 		task_io_account_cancelled_write(PAGE_CACHE_SIZE);
@@ -2321,6 +2323,7 @@ int clear_page_dirty_for_io(struct page *page)
 		 * exclusion.
 		 */
 		if (TestClearPageDirty(page)) {
+			mem_cgroup_update_nr_dirty(page, -1);
 			dec_zone_page_state(page, NR_FILE_DIRTY);
 			dec_bdi_stat(inode_to_bdi(mapping->host),
 					BDI_RECLAIMABLE);
