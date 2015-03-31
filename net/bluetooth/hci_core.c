@@ -2874,7 +2874,6 @@ static void le_scan_disable_work_complete(struct hci_dev *hdev, u8 status,
 {
 	/* General inquiry access code (GIAC) */
 	u8 lap[3] = { 0x33, 0x8b, 0x9e };
-	struct hci_request req;
 	struct hci_cp_inquiry cp;
 	int err;
 
@@ -2893,13 +2892,6 @@ static void le_scan_disable_work_complete(struct hci_dev *hdev, u8 status,
 		break;
 
 	case DISCOV_TYPE_INTERLEAVED:
-		hci_req_init(&req, hdev);
-
-		memset(&cp, 0, sizeof(cp));
-		memcpy(&cp.lap, lap, sizeof(cp.lap));
-		cp.length = DISCOV_INTERLEAVED_INQUIRY_LEN;
-		hci_req_add(&req, HCI_OP_INQUIRY, sizeof(cp), &cp);
-
 		hci_dev_lock(hdev);
 
 		if (test_bit(HCI_QUIRK_SIMULTANEOUS_DISCOVERY,
@@ -2914,7 +2906,16 @@ static void le_scan_disable_work_complete(struct hci_dev *hdev, u8 status,
 				hci_discovery_set_state(hdev,
 							DISCOVERY_STOPPED);
 		} else {
+			struct hci_request req;
+
 			hci_inquiry_cache_flush(hdev);
+
+			hci_req_init(&req, hdev);
+
+			memset(&cp, 0, sizeof(cp));
+			memcpy(&cp.lap, lap, sizeof(cp.lap));
+			cp.length = DISCOV_INTERLEAVED_INQUIRY_LEN;
+			hci_req_add(&req, HCI_OP_INQUIRY, sizeof(cp), &cp);
 
 			err = hci_req_run(&req, inquiry_complete);
 			if (err) {
@@ -3125,6 +3126,7 @@ struct hci_dev *hci_alloc_dev(void)
 
 	hci_init_sysfs(hdev);
 	discovery_init(hdev);
+	adv_info_init(hdev);
 
 	return hdev;
 }
@@ -3583,7 +3585,7 @@ int hci_send_cmd(struct hci_dev *hdev, __u16 opcode, __u32 plen,
 	/* Stand-alone HCI commands must be flagged as
 	 * single-command requests.
 	 */
-	bt_cb(skb)->req_start = 1;
+	bt_cb(skb)->req.start = true;
 
 	skb_queue_tail(&hdev->cmd_q, skb);
 	queue_work(hdev->workqueue, &hdev->cmd_work);
@@ -4261,7 +4263,7 @@ static bool hci_req_is_complete(struct hci_dev *hdev)
 	if (!skb)
 		return true;
 
-	return bt_cb(skb)->req_start;
+	return bt_cb(skb)->req.start;
 }
 
 static void hci_resend_last(struct hci_dev *hdev)
@@ -4321,14 +4323,14 @@ void hci_req_cmd_complete(struct hci_dev *hdev, u16 opcode, u8 status)
 	 * command queue (hdev->cmd_q).
 	 */
 	if (hdev->sent_cmd) {
-		req_complete = bt_cb(hdev->sent_cmd)->req_complete;
+		req_complete = bt_cb(hdev->sent_cmd)->req.complete;
 
 		if (req_complete) {
 			/* We must set the complete callback to NULL to
 			 * avoid calling the callback more than once if
 			 * this function gets called again.
 			 */
-			bt_cb(hdev->sent_cmd)->req_complete = NULL;
+			bt_cb(hdev->sent_cmd)->req.complete = NULL;
 
 			goto call_complete;
 		}
@@ -4337,12 +4339,12 @@ void hci_req_cmd_complete(struct hci_dev *hdev, u16 opcode, u8 status)
 	/* Remove all pending commands belonging to this request */
 	spin_lock_irqsave(&hdev->cmd_q.lock, flags);
 	while ((skb = __skb_dequeue(&hdev->cmd_q))) {
-		if (bt_cb(skb)->req_start) {
+		if (bt_cb(skb)->req.start) {
 			__skb_queue_head(&hdev->cmd_q, skb);
 			break;
 		}
 
-		req_complete = bt_cb(skb)->req_complete;
+		req_complete = bt_cb(skb)->req.complete;
 		kfree_skb(skb);
 	}
 	spin_unlock_irqrestore(&hdev->cmd_q.lock, flags);
