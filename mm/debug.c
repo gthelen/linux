@@ -31,6 +31,7 @@ static const struct trace_print_flags pageflag_names[] = {
 #else
 	{1UL << PG_compound,		"compound"	},
 #endif
+	{1UL << PG_unlocked_set_dirty,  "ulsd"          },
 	{1UL << PG_swapcache,		"swapcache"	},
 	{1UL << PG_mappedtodisk,	"mappedtodisk"	},
 	{1UL << PG_reclaim,		"reclaim"	},

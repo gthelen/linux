@@ -2521,6 +2521,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
 	dec_mm_counter_fast(mm, MM_SWAPENTS);
+	BUG_ON(PageUnlockedSetDirty(page));
 	pte = mk_pte(page, vma->vm_page_prot);
 	if ((flags & FAULT_FLAG_WRITE) && reuse_swap_page(page)) {
 		pte = maybe_mkwrite(pte_mkdirty(pte), vma);
@@ -2730,6 +2731,8 @@ static int __do_fault(struct vm_area_struct *vma, unsigned long address,
 		lock_page(vmf.page);
 	else
 		VM_BUG_ON_PAGE(!PageLocked(vmf.page), vmf.page);
+
+	BUG_ON(PageUnlockedSetDirty(vmf.page));
 
  out:
 	*page = vmf.page;
@@ -3131,6 +3134,7 @@ static int do_numa_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		pte_unmap_unlock(ptep, ptl);
 		return 0;
 	}
+	BUG_ON(PageUnlockedSetDirty(page));
 
 	/*
 	 * Avoid grouping on RO pages in general. RO pages shouldn't hurt as

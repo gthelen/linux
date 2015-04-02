@@ -109,6 +109,7 @@ enum pageflags {
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	PG_compound_lock,
 #endif
+	PG_unlocked_set_dirty,
 	__NR_PAGEFLAGS,
 
 	/* Filesystems */
@@ -304,6 +305,8 @@ PAGEFLAG(Private, private, PF_ANY) __SETPAGEFLAG(Private, private, PF_ANY)
 PAGEFLAG(Private2, private_2, PF_ANY) TESTSCFLAG(Private2, private_2, PF_ANY)
 PAGEFLAG(OwnerPriv1, owner_priv_1, PF_ANY)
 	TESTCLEARFLAG(OwnerPriv1, owner_priv_1, PF_ANY)
+
+PAGEFLAG(UnlockedSetDirty, unlocked_set_dirty, PF_ANY)
 
 /*
  * Only test-and-set exist for PG_writeback.  The unconditional operators are

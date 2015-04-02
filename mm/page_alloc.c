@@ -790,6 +790,8 @@ static bool free_pages_prepare(struct page *page, unsigned int order)
 	bool compound = PageCompound(page);
 	int i, bad = 0;
 
+	ClearPageUnlockedSetDirty(page);
+
 	VM_BUG_ON_PAGE(PageTail(page), page);
 	VM_BUG_ON_PAGE(compound && compound_order(page) != order, page);
 

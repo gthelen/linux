@@ -2067,6 +2067,10 @@ void mem_cgroup_update_nr_dirty(struct page *page, int delta)
 	 * page before modifying PG_dirty and calling this function.
 	 */
 	VM_BUG_ON_PAGE(page_mapped(page) && !PageLocked(page), page);
+	if (!PageLocked(page)) {
+		BUG_ON(delta <= 0);
+		SetPageUnlockedSetDirty(page);
+	}
 
 	memcg = page->mem_cgroup;
 	if (!memcg)
